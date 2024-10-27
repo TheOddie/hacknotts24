@@ -1,16 +1,17 @@
 #![allow(dead_code)]
 use core::f32;
-use std::{cmp::Ordering, mem::MaybeUninit, time::Instant};
+use std::{cmp::Ordering, fmt::Write, mem::MaybeUninit, time::Instant};
 
 use glam::{swizzles::*, Vec2, Vec3, Vec3A, Vec4};
 use image::{ImageBuffer, Rgb};
+use indicatif::{ProgressBar, ProgressState, ProgressStyle};
 use rayon::prelude::*;
 
 fn main() {
     let imgx = 1920 / 2;
     let imgy = 1080 / 2;
 
-    let samples_per_pixel = 250;
+    let samples_per_pixel = 150;
     let max_bounces = 10;
 
     let vertical_fov = 20.;
@@ -37,8 +38,8 @@ fn main() {
     let mut spheres = vec![];
     let mut materials = vec![];
 
-    for z in -11..11 {
-        for x in -11..11 {
+    for z in -20..20 {
+        for x in -20..20 {
             let choice = rand::random();
             let center = Vec3A::new(
                 x as f32 + 0.9 * rand::random::<f32>(),
@@ -118,6 +119,13 @@ fn main() {
 
     let mut imgbuf = ImageBuffer::new(imgx, imgy);
 
+    let total_pixels = imgx * imgy;
+    let pb = ProgressBar::new(total_pixels as u64);
+    pb.set_style(ProgressStyle::with_template("{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {pos} ({eta})")
+        .unwrap()
+        .with_key("eta", |state: &ProgressState, w: &mut dyn Write| write!(w, "{:.1}s", state.eta().as_secs_f64()).unwrap())
+        .progress_chars("#>-"));
+
     let start_time = Instant::now();
     imgbuf
         .enumerate_pixels_mut()
@@ -129,7 +137,12 @@ fn main() {
                 colour += ray_colour(&world, ray, max_bounces);
             }
             write_colour(colour / samples_per_pixel as f32, pixel);
+            let count = y * imgx + x;
+            if count % 1000 == 0 {
+                pb.set_position(count as u64);
+            }
         });
+    pb.finish_with_message("Complete");
     println!("Rendered in {:#?}", start_time.elapsed());
 
     imgbuf.save("image.png").unwrap();

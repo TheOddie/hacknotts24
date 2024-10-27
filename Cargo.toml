@@ -30,5 +30,6 @@ rustflags = [
 [dependencies]
 glam = "0.29.0"
 image = "0.25.4"
+indicatif = { version = "0.17.8", features = ["rayon"] }
 rand = "0.8.5"
 rayon = "1.10.0"
