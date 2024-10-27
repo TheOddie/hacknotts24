@@ -1,9 +1,9 @@
 #![allow(dead_code)]
 use core::f32;
-use std::time::Instant;
+use std::{cmp::Ordering, mem::MaybeUninit, time::Instant};
 
-use image::{ImageBuffer, Rgb};
 use glam::{swizzles::*, Vec2, Vec3, Vec3A, Vec4};
+use image::{ImageBuffer, Rgb};
 use rayon::prelude::*;
 
 fn main() {
@@ -40,13 +40,18 @@ fn main() {
     for z in -11..11 {
         for x in -11..11 {
             let choice = rand::random();
-            let center = Vec3A::new(x as f32 + 0.9 * rand::random::<f32>(), 0.2, z as f32 + 0.9 * rand::random::<f32>());
+            let center = Vec3A::new(
+                x as f32 + 0.9 * rand::random::<f32>(),
+                0.2,
+                z as f32 + 0.9 * rand::random::<f32>(),
+            );
             let mut center2 = None;
 
             if (center - Vec3A::new(4.0, 0.2, 0.0)).length_squared() > (0.9 * 0.9) {
                 let material = match choice {
                     0.0..0.8 => {
-                        let albedo = Vec3A::from(rand::random::<[f32; 3]>()) * Vec3A::from(rand::random::<[f32; 3]>());
+                        let albedo = Vec3A::from(rand::random::<[f32; 3]>())
+                            * Vec3A::from(rand::random::<[f32; 3]>());
                         center2 = Some(center + Vec3A::new(0.0, 0.5 * rand::random::<f32>(), 0.0));
                         Mat::Lambertian(Lambertian { albedo })
                     }
@@ -55,9 +60,9 @@ fn main() {
                         let fuzz = rand::random::<f32>() / 2.0;
                         Mat::Metal(Metal { albedo, fuzz })
                     }
-                    _ => {
-                        Mat::Dielectric(Dielectric { refraction_index: 1.5 })
-                    }
+                    _ => Mat::Dielectric(Dielectric {
+                        refraction_index: 1.5,
+                    }),
                 };
                 materials.push(material);
                 let material_index = materials.len() - 1;
@@ -72,34 +77,59 @@ fn main() {
         }
     }
 
-    materials.push(Mat::Dielectric(Dielectric { refraction_index: 1.5 }));
-    spheres.push(Sphere::new(Vec3A::new(0.0, 1.0, 0.0), 1.0, materials.len() as u32 - 1));
+    materials.push(Mat::Dielectric(Dielectric {
+        refraction_index: 1.5,
+    }));
+    spheres.push(Sphere::new(
+        Vec3A::new(0.0, 1.0, 0.0),
+        1.0,
+        materials.len() as u32 - 1,
+    ));
 
-    materials.push(Mat::Lambertian(Lambertian { albedo: col(0.4, 0.2, 0.1) }));
-    spheres.push(Sphere::new(Vec3A::new(-4.0, 1.0, 0.0), 1.0, materials.len() as u32 - 1));
+    materials.push(Mat::Lambertian(Lambertian {
+        albedo: col(0.4, 0.2, 0.1),
+    }));
+    spheres.push(Sphere::new(
+        Vec3A::new(-4.0, 1.0, 0.0),
+        1.0,
+        materials.len() as u32 - 1,
+    ));
 
-    materials.push(Mat::Metal(Metal { albedo: col(0.7, 0.6, 0.5), fuzz: 0.0 }));
-    spheres.push(Sphere::new(Vec3A::new(4.0, 1.0, 0.0), 1.0, materials.len() as u32 - 1));
+    materials.push(Mat::Metal(Metal {
+        albedo: col(0.7, 0.6, 0.5),
+        fuzz: 0.0,
+    }));
+    spheres.push(Sphere::new(
+        Vec3A::new(4.0, 1.0, 0.0),
+        1.0,
+        materials.len() as u32 - 1,
+    ));
 
-    materials.push(Mat::Lambertian(Lambertian { albedo: col(0.5, 0.5, 0.5) }));
-    spheres.push(Sphere::new(Vec3A::new(0.0, -1000.0, 0.0), 1000.0, materials.len() as u32 - 1));
+    materials.push(Mat::Lambertian(Lambertian {
+        albedo: col(0.5, 0.5, 0.5),
+    }));
+    spheres.push(Sphere::new(
+        Vec3A::new(0.0, -1000.0, 0.0),
+        1000.0,
+        materials.len() as u32 - 1,
+    ));
 
-    let spheres = HittableList::from_list(spheres);
-    let world = World { spheres, materials };
+    let world = World::new(spheres, materials);
 
     let mut imgbuf = ImageBuffer::new(imgx, imgy);
 
     let start_time = Instant::now();
-    imgbuf.enumerate_pixels_mut().par_bridge().for_each(
-        |(x, y, pixel)| {
+    imgbuf
+        .enumerate_pixels_mut()
+        .par_bridge()
+        .for_each(|(x, y, pixel)| {
             let mut colour = Vec3A::ZERO;
             for _ in 0..samples_per_pixel {
                 let ray = camera.ray_at(x, y);
                 colour += ray_colour(&world, ray, max_bounces);
             }
             write_colour(colour / samples_per_pixel as f32, pixel);
-        }
-    );
+        });
     println!("Rendered in {:#?}", start_time.elapsed());
 
     imgbuf.save("image.png").unwrap();
@@ -111,8 +141,10 @@ fn ray_colour(world: &World, r: Ray, depth: u32) -> Vec3A {
     }
 
     if let Some(rec) = world.hit(r, Interval::new(0.001, f32::INFINITY)) {
-        if let Some((scattered, attenuation)) = world.materials[rec.mat_index as usize].scatter(r, rec) {
-            return attenuation * ray_colour(world, scattered, depth-1);
+        if let Some((scattered, attenuation)) =
+            world.materials[rec.mat_index as usize].scatter(r, rec)
+        {
+            return attenuation * ray_colour(world, scattered, depth - 1);
         }
         return Vec3A::ZERO;
     }
@@ -122,52 +154,105 @@ fn ray_colour(world: &World, r: Ray, depth: u32) -> Vec3A {
     (1.0 - a) * col(1.0, 1.0, 1.0) + a * col(0.5, 0.7, 1.0)
 }
 
-struct BVHNode {
-    left: Box<dyn Hittable>,
-    right: Box<dyn Hittable>,
-    bbox: AABB,
+#[derive(Debug)]
+struct BVH<T: Hittable> {
+    objects: Vec<T>,
+    tree: Vec<InnerBVHNode>,
 }
 
-impl BVHNode {
-    // fn new(objects: Vec<Box<dyn Hittable>>) -> Self {
-    //     let len = objects.len();
-    //     Self::split(objects, 0, len)
-    // }
-
-    // fn split(objects: Vec<Box<dyn Hittable>>, start: usize, end: usize) -> Self {
-    //     let axis = rand::random::<usize>() % 3;
-
-    //     let comparator 
-    // }
-
-    // fn box_compare(a: Box<dyn Hittable>, b: Box<dyn Hittable>, axis: usize) -> bool {
-    //     let ai = a.bounding_box().axis_interval(axis);
-    //     let bi = b.bounding_box().
-    // }
+#[derive(Clone, Copy, Debug)]
+enum InnerBVHNode {
+    Node(AABB),
+    Leaf(usize),
 }
 
-impl Hittable for BVHNode {
-    fn hit(&self, r: Ray, mut rt: Interval) -> Option<HitRecord> {
-        if !self.bbox.hit(r, rt) {
-            return None;
+impl<T: Hittable> BVH<T> {
+    fn new(mut objects: Vec<T>) -> Self {
+        let len = objects.len();
+        let mut tree = vec![std::mem::MaybeUninit::uninit(); len.next_power_of_two() * 2];
+        Self::split(&mut objects, &mut tree, 1, 0, len);
+        Self {
+            objects,
+            tree: unsafe { std::mem::transmute(tree) },
         }
+    }
 
-        let left = self.left.hit(r, rt);
-        if let Some(rec) = left {
-            rt = Interval::new(rt.min, rec.t());
-            let right = self.right.hit(r, rt);
-            Some(right.unwrap_or(rec))
-        } else {
-            self.right.hit(r, rt)
+    fn split(
+        objects: &mut [T],
+        tree: &mut [MaybeUninit<InnerBVHNode>],
+        node: usize,
+        start: usize,
+        end: usize,
+    ) {
+        let span = end - start;
+        match span {
+            1 => {
+                tree[node * 2] = MaybeUninit::new(InnerBVHNode::Leaf(start));
+            }
+            2 => {
+                tree[node * 2] = MaybeUninit::new(InnerBVHNode::Leaf(start));
+                tree[node * 2 + 1] = MaybeUninit::new(InnerBVHNode::Leaf(start + 1));
+            }
+            _ => {
+                let axis = rand::random::<usize>() % 3;
+
+                objects[start..end].sort_by(|a, b| Self::box_compare(a, b, axis));
+                let mid = start + span / 2;
+                Self::split(objects, tree, node * 2, start, mid);
+                Self::split(objects, tree, node * 2 + 1, mid, end);
+            }
         }
+        let left_box = match unsafe { std::mem::transmute(tree[node * 2]) } {
+            InnerBVHNode::Node(aabb) => aabb,
+            InnerBVHNode::Leaf(i) => objects[i].bounding_box(),
+        };
+        let right_box = match unsafe { std::mem::transmute(tree[node * 2 + 1]) } {
+            InnerBVHNode::Node(aabb) => aabb,
+            InnerBVHNode::Leaf(i) => objects[i].bounding_box(),
+        };
+        tree[node] = MaybeUninit::new(InnerBVHNode::Node(left_box.merge(right_box)));
+    }
+
+    fn box_compare(a: &T, b: &T, axis: usize) -> Ordering {
+        let ai = a.bounding_box().axis_interval(axis);
+        let bi = b.bounding_box().axis_interval(axis);
+        ai.min.partial_cmp(&bi.min).unwrap_or(Ordering::Equal)
+    }
+
+    fn inner_hit(&self, r: Ray, mut rt: Interval, node: usize) -> Option<HitRecord> {
+        match self.tree[node] {
+            InnerBVHNode::Node(bbox) => {
+                if !bbox.hit(r, rt) {
+                    return None;
+                }
+                let left = self.inner_hit(r, rt, node * 2);
+                if let Some(rec) = left {
+                    rt = Interval::new(rt.min, rec.t());
+                    let right = self.inner_hit(r, rt, node * 2 + 1);
+                    Some(right.unwrap_or(rec))
+                } else {
+                    self.inner_hit(r, rt, node * 2 + 1)
+                }
+            }
+            InnerBVHNode::Leaf(i) => self.objects[i].hit(r, rt),
+        }
+    }
+}
+
+impl<T: Hittable> Hittable for BVH<T> {
+    fn hit(&self, r: Ray, rt: Interval) -> Option<HitRecord> {
+        self.inner_hit(r, rt, 1)
     }
 
     fn bounding_box(&self) -> AABB {
-        self.bbox
+        match self.tree[1] {
+            InnerBVHNode::Node(aabb) => aabb,
+            InnerBVHNode::Leaf(i) => self.objects[i].bounding_box(),
+        }
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct AABB {
     x: Interval,
     y: Interval,
@@ -175,12 +260,28 @@ struct AABB {
 }
 
 impl AABB {
-    const EMPTY: AABB = AABB { x: Interval::EMPTY, y: Interval::EMPTY, z: Interval::EMPTY };
+    const EMPTY: AABB = AABB {
+        x: Interval::EMPTY,
+        y: Interval::EMPTY,
+        z: Interval::EMPTY,
+    };
 
     fn new(a: Vec3A, b: Vec3A) -> Self {
-        let x = if a.x <= b.x { Interval::new(a.x, b.x) } else { Interval::new(b.x, a.x) };
-        let y = if a.y <= b.y { Interval::new(a.y, b.y) } else { Interval::new(b.y, a.y) };
-        let z = if a.z <= b.z { Interval::new(a.z, b.z) } else { Interval::new(b.z, a.z) };
+        let x = if a.x <= b.x {
+            Interval::new(a.x, b.x)
+        } else {
+            Interval::new(b.x, a.x)
+        };
+        let y = if a.y <= b.y {
+            Interval::new(a.y, b.y)
+        } else {
+            Interval::new(b.y, a.y)
+        };
+        let z = if a.z <= b.z {
+            Interval::new(a.z, b.z)
+        } else {
+            Interval::new(b.z, a.z)
+        };
         AABB { x, y, z }
     }
 
@@ -193,7 +294,7 @@ impl AABB {
             0 => self.x,
             1 => self.y,
             2 => self.z,
-            _ => unreachable!()
+            _ => unreachable!(),
         }
     }
 
@@ -205,11 +306,19 @@ impl AABB {
             let t0 = (ax.min - r.origin[axis]) * adinv;
             let t1 = (ax.max - r.origin[axis]) * adinv;
             if t0 < t1 {
-                if t0 > rt.min { rt.min = t0 }
-                if t1 < rt.max { rt.max = t1 }
+                if t0 > rt.min {
+                    rt.min = t0
+                }
+                if t1 < rt.max {
+                    rt.max = t1
+                }
             } else {
-                if t1 > rt.min { rt.min = t1 }
-                if t0 < rt.max { rt.max = t0 }
+                if t1 > rt.min {
+                    rt.min = t1
+                }
+                if t0 < rt.max {
+                    rt.max = t0
+                }
             }
 
             if rt.max <= rt.min {
@@ -228,23 +337,29 @@ impl AABB {
     }
 }
 
-
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct Interval {
     min: f32,
     max: f32,
 }
 
 impl Interval {
-    const EMPTY: Interval = Interval { min: f32::MAX, max: f32::MIN };
+    const EMPTY: Interval = Interval {
+        min: f32::MAX,
+        max: f32::MIN,
+    };
 
     fn new(min: f32, max: f32) -> Self {
         Self { min, max }
     }
 
     fn clamp(self, x: f32) -> f32 {
-        if x < self.min { return self.min }
-        if x > self.max { return self.max }
+        if x < self.min {
+            return self.min;
+        }
+        if x > self.max {
+            return self.max;
+        }
         x
     }
 
@@ -269,15 +384,25 @@ impl Interval {
 }
 
 struct World {
-    spheres: HittableList<Sphere>,
+    spheres: BVH<Sphere>,
     materials: Vec<Mat>,
+}
+
+impl World {
+    fn new(spheres: Vec<Sphere>, materials: Vec<Mat>) -> Self {
+        let bvh = BVH::new(spheres);
+        Self {
+            spheres: bvh,
+            materials,
+        }
+    }
 }
 
 impl Hittable for World {
     fn hit(&self, r: Ray, interval: Interval) -> Option<HitRecord> {
         self.spheres.hit(r, interval)
     }
-    
+
     fn bounding_box(&self) -> AABB {
         self.spheres.bounding_box()
     }
@@ -392,7 +517,9 @@ impl<T: Hittable> HittableList<T> {
 
     fn from_list(l: impl Into<Vec<T>>) -> Self {
         let list: Vec<T> = l.into();
-        let bbox = list.iter().fold(AABB::EMPTY, |b, o| b.merge(o.bounding_box()));
+        let bbox = list
+            .iter()
+            .fold(AABB::EMPTY, |b, o| b.merge(o.bounding_box()));
         Self(list, bbox)
     }
 }
@@ -411,7 +538,7 @@ impl<T: Hittable> Hittable for HittableList<T> {
 
         best_hit
     }
-    
+
     fn bounding_box(&self) -> AABB {
         self.1
     }
@@ -477,7 +604,7 @@ impl Sphere {
 
     fn new_moving(c1: Vec3A, c2: Vec3A, radius: f32, mat_index: u32) -> Self {
         let fmat = unsafe { std::mem::transmute(mat_index) };
-        Self(c1.extend(radius), (c2-c1).extend(fmat))
+        Self(c1.extend(radius), (c2 - c1).extend(fmat))
     }
 
     fn mat_index(&self) -> u32 {
@@ -519,7 +646,7 @@ impl Hittable for Sphere {
         let normal = (point - center) / radius;
 
         let rec = HitRecord::new(r, normal, point, root, self.mat_index());
-        
+
         Some(rec)
     }
 
@@ -535,7 +662,6 @@ impl Hittable for Sphere {
             let box2 = AABB::new(c2 - rvec, c2 + rvec);
             box1.merge(box2)
         }
-
     }
 }
 
@@ -552,11 +678,19 @@ impl Ray {
     }
 
     fn new(origin: Vec3A, direction: Vec3A) -> Self {
-        Self { origin, direction, time: 0.0 }
+        Self {
+            origin,
+            direction,
+            time: 0.0,
+        }
     }
 
     fn new_t(origin: Vec3A, direction: Vec3A, time: f32) -> Self {
-        Self { origin, direction, time }
+        Self {
+            origin,
+            direction,
+            time,
+        }
     }
 }
 
@@ -587,7 +721,7 @@ impl Camera {
         let center = look_from;
 
         let θ = vertical_fov.to_radians();
-        let h = (θ/2.).tan();
+        let h = (θ / 2.).tan();
 
         let viewport_height = 2. * h * focus_dist;
         let viewport_width = viewport_height * (image_width as f32 / image_height as f32);
@@ -601,12 +735,20 @@ impl Camera {
 
         let delta_u = viewport_u / image_width as f32;
         let delta_v = viewport_v / image_height as f32;
-        let top_left = center - focus_dist * w - viewport_u/2. - viewport_v/2.;
+        let top_left = center - focus_dist * w - viewport_u / 2. - viewport_v / 2.;
         let p0_loc = top_left + 0.5 * (delta_u + delta_v);
         let defocus_radius = focus_dist * (defocus_angle / 2.0).to_radians().tan();
         let defocus_disk_u = u * defocus_radius;
         let defocus_disk_v = v * defocus_radius;
-        let result = Self { p0_loc, delta_u, delta_v, center, defocus_disk_u, defocus_disk_v, defocus_angle };
+        let result = Self {
+            p0_loc,
+            delta_u,
+            delta_v,
+            center,
+            defocus_disk_u,
+            defocus_disk_v,
+            defocus_angle,
+        };
         result
     }
 
@@ -623,7 +765,11 @@ impl Camera {
 
         let direction = sample - origin;
         let time = rand::random();
-        Ray { origin, direction, time }
+        Ray {
+            origin,
+            direction,
+            time,
+        }
     }
 
     fn defocus_disk_sample(&self) -> Vec3A {
@@ -635,9 +781,7 @@ impl Camera {
 #[inline]
 fn write_colour(colour: Vec3A, pixel: &mut Rgb<u8>) {
     // colour is [0..=1]
-    let clamped = 255.999 * colour
-        .map(linear_to_gamma)
-        .clamp(Vec3A::ZERO, Vec3A::ONE);
+    let clamped = 255.999 * colour.map(linear_to_gamma).clamp(Vec3A::ZERO, Vec3A::ONE);
     let arr = clamped.to_array();
     let rgb = Rgb([arr[0] as u8, arr[1] as u8, arr[2] as u8]);
     *pixel = rgb;
@@ -652,7 +796,7 @@ fn random_unit_vector() -> Vec3A {
         let p = 2.0 * Vec3A::from(rand::random::<[f32; 3]>()) - Vec3A::ONE;
         let len_sqr = p.length_squared();
         if 1e-100 < len_sqr && len_sqr <= 1.0 {
-            return p / len_sqr.sqrt()
+            return p / len_sqr.sqrt();
         }
     }
 }
@@ -699,7 +843,7 @@ fn random_in_unit_disc() -> Vec2 {
     loop {
         let p = 2.0 * Vec2::from(rand::random::<[f32; 2]>()) - Vec2::ONE;
         if p.length_squared() < 1. {
-            return p
+            return p;
         }
     }
 }
