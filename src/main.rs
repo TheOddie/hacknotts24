@@ -3,15 +3,15 @@ use core::f32;
 use std::time::Instant;
 
 use image::{ImageBuffer, Rgb};
-use glam::{swizzles::*, Vec2, Vec3A, Vec4};
+use glam::{swizzles::*, Vec2, Vec3, Vec3A, Vec4};
 use rayon::prelude::*;
 
 fn main() {
     let imgx = 1920 / 2;
     let imgy = 1080 / 2;
 
-    let samples_per_pixel = 7;
-    let max_bounces = 50;
+    let samples_per_pixel = 250;
+    let max_bounces = 10;
 
     let vertical_fov = 20.;
     let look_from = Vec3A::new(13.0, 2.0, 3.0);
@@ -41,11 +41,13 @@ fn main() {
         for x in -11..11 {
             let choice = rand::random();
             let center = Vec3A::new(x as f32 + 0.9 * rand::random::<f32>(), 0.2, z as f32 + 0.9 * rand::random::<f32>());
+            let mut center2 = None;
 
             if (center - Vec3A::new(4.0, 0.2, 0.0)).length_squared() > (0.9 * 0.9) {
                 let material = match choice {
                     0.0..0.8 => {
                         let albedo = Vec3A::from(rand::random::<[f32; 3]>()) * Vec3A::from(rand::random::<[f32; 3]>());
+                        center2 = Some(center + Vec3A::new(0.0, 0.5 * rand::random::<f32>(), 0.0));
                         Mat::Lambertian(Lambertian { albedo })
                     }
                     0.8..0.95 => {
@@ -60,7 +62,11 @@ fn main() {
                 materials.push(material);
                 let material_index = materials.len() - 1;
 
-                let sphere = Sphere::new(center, 0.2, material_index as u32);
+                let sphere = if let Some(c2) = center2 {
+                    Sphere::new_moving(center, c2, 0.2, material_index as u32)
+                } else {
+                    Sphere::new(center, 0.2, material_index as u32)
+                };
                 spheres.push(sphere);
             }
         }
@@ -78,7 +84,7 @@ fn main() {
     materials.push(Mat::Lambertian(Lambertian { albedo: col(0.5, 0.5, 0.5) }));
     spheres.push(Sphere::new(Vec3A::new(0.0, -1000.0, 0.0), 1000.0, materials.len() as u32 - 1));
 
-    let spheres = HittableList(spheres);
+    let spheres = HittableList::from_list(spheres);
     let world = World { spheres, materials };
 
     let mut imgbuf = ImageBuffer::new(imgx, imgy);
@@ -104,7 +110,7 @@ fn ray_colour(world: &World, r: Ray, depth: u32) -> Vec3A {
         return Vec3A::ZERO;
     }
 
-    if let Some(rec) = world.hit(r, 0.001, f32::INFINITY) {
+    if let Some(rec) = world.hit(r, Interval::new(0.001, f32::INFINITY)) {
         if let Some((scattered, attenuation)) = world.materials[rec.mat_index as usize].scatter(r, rec) {
             return attenuation * ray_colour(world, scattered, depth-1);
         }
@@ -116,14 +122,164 @@ fn ray_colour(world: &World, r: Ray, depth: u32) -> Vec3A {
     (1.0 - a) * col(1.0, 1.0, 1.0) + a * col(0.5, 0.7, 1.0)
 }
 
+struct BVHNode {
+    left: Box<dyn Hittable>,
+    right: Box<dyn Hittable>,
+    bbox: AABB,
+}
+
+impl BVHNode {
+    // fn new(objects: Vec<Box<dyn Hittable>>) -> Self {
+    //     let len = objects.len();
+    //     Self::split(objects, 0, len)
+    // }
+
+    // fn split(objects: Vec<Box<dyn Hittable>>, start: usize, end: usize) -> Self {
+    //     let axis = rand::random::<usize>() % 3;
+
+    //     let comparator 
+    // }
+
+    // fn box_compare(a: Box<dyn Hittable>, b: Box<dyn Hittable>, axis: usize) -> bool {
+    //     let ai = a.bounding_box().axis_interval(axis);
+    //     let bi = b.bounding_box().
+    // }
+}
+
+impl Hittable for BVHNode {
+    fn hit(&self, r: Ray, mut rt: Interval) -> Option<HitRecord> {
+        if !self.bbox.hit(r, rt) {
+            return None;
+        }
+
+        let left = self.left.hit(r, rt);
+        if let Some(rec) = left {
+            rt = Interval::new(rt.min, rec.t());
+            let right = self.right.hit(r, rt);
+            Some(right.unwrap_or(rec))
+        } else {
+            self.right.hit(r, rt)
+        }
+    }
+
+    fn bounding_box(&self) -> AABB {
+        self.bbox
+    }
+}
+
+#[derive(Clone, Copy)]
+struct AABB {
+    x: Interval,
+    y: Interval,
+    z: Interval,
+}
+
+impl AABB {
+    const EMPTY: AABB = AABB { x: Interval::EMPTY, y: Interval::EMPTY, z: Interval::EMPTY };
+
+    fn new(a: Vec3A, b: Vec3A) -> Self {
+        let x = if a.x <= b.x { Interval::new(a.x, b.x) } else { Interval::new(b.x, a.x) };
+        let y = if a.y <= b.y { Interval::new(a.y, b.y) } else { Interval::new(b.y, a.y) };
+        let z = if a.z <= b.z { Interval::new(a.z, b.z) } else { Interval::new(b.z, a.z) };
+        AABB { x, y, z }
+    }
+
+    fn from_intervals(x: Interval, y: Interval, z: Interval) -> Self {
+        Self { x, y, z }
+    }
+
+    fn axis_interval(&self, n: usize) -> Interval {
+        match n {
+            0 => self.x,
+            1 => self.y,
+            2 => self.z,
+            _ => unreachable!()
+        }
+    }
+
+    fn hit(&self, r: Ray, mut rt: Interval) -> bool {
+        for axis in 0..3 {
+            let ax = self.axis_interval(axis);
+            let adinv = 1.0 / r.direction[axis];
+
+            let t0 = (ax.min - r.origin[axis]) * adinv;
+            let t1 = (ax.max - r.origin[axis]) * adinv;
+            if t0 < t1 {
+                if t0 > rt.min { rt.min = t0 }
+                if t1 < rt.max { rt.max = t1 }
+            } else {
+                if t1 > rt.min { rt.min = t1 }
+                if t0 < rt.max { rt.max = t0 }
+            }
+
+            if rt.max <= rt.min {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn merge(self, other: AABB) -> AABB {
+        AABB {
+            x: self.x.join(other.x),
+            y: self.y.join(other.y),
+            z: self.z.join(other.z),
+        }
+    }
+}
+
+
+#[derive(Clone, Copy)]
+struct Interval {
+    min: f32,
+    max: f32,
+}
+
+impl Interval {
+    const EMPTY: Interval = Interval { min: f32::MAX, max: f32::MIN };
+
+    fn new(min: f32, max: f32) -> Self {
+        Self { min, max }
+    }
+
+    fn clamp(self, x: f32) -> f32 {
+        if x < self.min { return self.min }
+        if x > self.max { return self.max }
+        x
+    }
+
+    fn expand(self, delta: f32) -> Self {
+        let padding = 0.5 * delta;
+        Self {
+            min: self.min - padding,
+            max: self.max + padding,
+        }
+    }
+
+    fn contains(self, x: f32) -> bool {
+        self.min <= x && x <= self.max
+    }
+
+    fn join(self, other: Interval) -> Interval {
+        Interval {
+            min: self.min.min(other.min),
+            max: self.max.max(other.max),
+        }
+    }
+}
+
 struct World {
     spheres: HittableList<Sphere>,
     materials: Vec<Mat>,
 }
 
 impl Hittable for World {
-    fn hit(&self, r: Ray, min: f32, max: f32) -> Option<HitRecord> {
-        self.spheres.hit(r, min, max)
+    fn hit(&self, r: Ray, interval: Interval) -> Option<HitRecord> {
+        self.spheres.hit(r, interval)
+    }
+    
+    fn bounding_box(&self) -> AABB {
+        self.spheres.bounding_box()
     }
 }
 
@@ -175,6 +331,7 @@ impl Material for Dielectric {
         let scattered = Ray {
             origin: rec.point(),
             direction,
+            time: ray.time,
         };
         Some((scattered, attenuation))
     }
@@ -191,7 +348,8 @@ impl Material for Metal {
         let reflected = reflected.normalize() + (self.fuzz * random_unit_vector());
         let scattered = Ray {
             origin: rec.point(),
-            direction: reflected
+            direction: reflected,
+            time: ray.time,
         };
         if scattered.direction.dot(rec.normal()) > 0. {
             Some((scattered, self.albedo))
@@ -206,7 +364,7 @@ struct Lambertian {
 }
 
 impl Material for Lambertian {
-    fn scatter(&self, _ray: Ray, rec: HitRecord) -> Option<(Ray, Vec3A)> {
+    fn scatter(&self, ray: Ray, rec: HitRecord) -> Option<(Ray, Vec3A)> {
         let mut scatter_direction = rec.normal() + random_unit_vector();
         if scatter_direction.length_squared() < 1e-6 {
             scatter_direction = rec.normal();
@@ -214,34 +372,38 @@ impl Material for Lambertian {
         let scattered = Ray {
             origin: rec.point(),
             direction: scatter_direction,
+            time: ray.time,
         };
         Some((scattered, self.albedo))
     }
 }
 
-struct HittableList<T: Hittable>(Vec<T>);
+struct HittableList<T: Hittable>(Vec<T>, AABB);
 
 impl<T: Hittable> HittableList<T> {
     fn new() -> Self {
-        Self(vec![])
+        Self(vec![], AABB::EMPTY)
     }
 
     fn add(&mut self, item: T) {
-        self.0.push(item)
+        self.1 = self.1.merge(item.bounding_box());
+        self.0.push(item);
     }
 
     fn from_list(l: impl Into<Vec<T>>) -> Self {
-        Self(l.into())
+        let list: Vec<T> = l.into();
+        let bbox = list.iter().fold(AABB::EMPTY, |b, o| b.merge(o.bounding_box()));
+        Self(list, bbox)
     }
 }
 
 impl<T: Hittable> Hittable for HittableList<T> {
-    fn hit(&self, r: Ray, min: f32, max: f32) -> Option<HitRecord> {
+    fn hit(&self, r: Ray, interval: Interval) -> Option<HitRecord> {
         let mut best_hit = None;
-        let mut closest_so_far = max;
+        let mut closest_so_far = interval.max;
 
         for object in self.0.iter() {
-            if let Some(rec) = object.hit(r, min, closest_so_far) {
+            if let Some(rec) = object.hit(r, Interval::new(interval.min, closest_so_far)) {
                 best_hit = Some(rec);
                 closest_so_far = rec.t();
             }
@@ -249,10 +411,15 @@ impl<T: Hittable> Hittable for HittableList<T> {
 
         best_hit
     }
+    
+    fn bounding_box(&self) -> AABB {
+        self.1
+    }
 }
 
 trait Hittable {
-    fn hit(&self, r: Ray, min: f32, max: f32) -> Option<HitRecord>;
+    fn hit(&self, r: Ray, interval: Interval) -> Option<HitRecord>;
+    fn bounding_box(&self) -> AABB;
 }
 
 #[derive(Clone, Copy)]
@@ -300,17 +467,36 @@ impl HitRecord {
 }
 
 #[derive(Clone, Copy, Debug)]
-struct Sphere(Vec4, u32);
+struct Sphere(Vec4, Vec4);
 
 impl Sphere {
     fn new(center: Vec3A, radius: f32, mat_index: u32) -> Self {
-        Self(center.extend(radius), mat_index)
+        let fmat = unsafe { std::mem::transmute(mat_index) };
+        Self(center.extend(radius), Vec3A::ZERO.extend(fmat))
+    }
+
+    fn new_moving(c1: Vec3A, c2: Vec3A, radius: f32, mat_index: u32) -> Self {
+        let fmat = unsafe { std::mem::transmute(mat_index) };
+        Self(c1.extend(radius), (c2-c1).extend(fmat))
+    }
+
+    fn mat_index(&self) -> u32 {
+        unsafe { std::mem::transmute(self.1.w) }
+    }
+
+    fn at(&self, time: f32) -> Vec3A {
+        Vec3A::from(self.0.xyz()) + time * Vec3A::from(self.1.xyz())
+    }
+
+    #[inline(always)]
+    fn radius(self) -> f32 {
+        self.0.w
     }
 }
 
 impl Hittable for Sphere {
-    fn hit(&self, r: Ray, min: f32, max: f32) -> Option<HitRecord> {
-        let center: Vec3A = self.0.xyz().into();
+    fn hit(&self, r: Ray, interval: Interval) -> Option<HitRecord> {
+        let center: Vec3A = self.at(r.time);
         let radius = self.0.w;
         let oc = center - r.origin;
         let a = r.direction.length_squared();
@@ -322,9 +508,9 @@ impl Hittable for Sphere {
         }
         let sqrt_d = discriminant.sqrt();
         let mut root = (h - sqrt_d) / a;
-        if root <= min || max <= root {
+        if !interval.contains(root) {
             root = (h + sqrt_d) / a;
-            if root <= min || max <= root {
+            if !interval.contains(root) {
                 return None;
             }
         }
@@ -332,9 +518,24 @@ impl Hittable for Sphere {
         let point = r.at(root);
         let normal = (point - center) / radius;
 
-        let rec = HitRecord::new(r, normal, point, root, self.1);
+        let rec = HitRecord::new(r, normal, point, root, self.mat_index());
         
         Some(rec)
+    }
+
+    fn bounding_box(&self) -> AABB {
+        let rvec = Vec3A::splat(self.radius());
+        if self.1.xyz() == Vec3::ZERO {
+            let center = Vec3A::from(self.0.xyz());
+            AABB::new(center - rvec, center + rvec)
+        } else {
+            let c1 = self.at(0.0);
+            let box1 = AABB::new(c1 - rvec, c1 + rvec);
+            let c2 = self.at(1.0);
+            let box2 = AABB::new(c2 - rvec, c2 + rvec);
+            box1.merge(box2)
+        }
+
     }
 }
 
@@ -342,11 +543,20 @@ impl Hittable for Sphere {
 struct Ray {
     origin: Vec3A,
     direction: Vec3A,
+    time: f32,
 }
 
 impl Ray {
     fn at(self, t: f32) -> Vec3A {
         self.origin + t * self.direction
+    }
+
+    fn new(origin: Vec3A, direction: Vec3A) -> Self {
+        Self { origin, direction, time: 0.0 }
+    }
+
+    fn new_t(origin: Vec3A, direction: Vec3A, time: f32) -> Self {
+        Self { origin, direction, time }
     }
 }
 
@@ -412,7 +622,8 @@ impl Camera {
         };
 
         let direction = sample - origin;
-        Ray { origin, direction }
+        let time = rand::random();
+        Ray { origin, direction, time }
     }
 
     fn defocus_disk_sample(&self) -> Vec3A {

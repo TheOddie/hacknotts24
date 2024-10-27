@@ -23,7 +23,8 @@ rustflags = [
     "-C", "link-arg=-fuse-ld=/usr/bin/mold",
     # (Nightly) Make the current crate share its generic instantiations
     "-Zshare-generics=y",
-    "-C", "target-cpu=native"
+    "-C", "target-cpu=native",
+    "-C", "target-feature=+simd128",
 ]
 
 [dependencies]
