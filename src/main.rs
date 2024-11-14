@@ -1,17 +1,17 @@
 #![allow(dead_code)]
 use core::f32;
-use std::{cmp::Ordering, fmt::Write, mem::MaybeUninit, time::Instant};
+use std::{cmp::Ordering, f32::consts::PI, fmt::Write, mem::MaybeUninit, time::Instant};
 
 use glam::{swizzles::*, Vec2, Vec3, Vec3A, Vec4};
-use image::{ImageBuffer, Rgb};
+use image::{DynamicImage, GenericImageView, ImageBuffer, Rgb};
 use indicatif::{ProgressBar, ProgressState, ProgressStyle};
 use rayon::prelude::*;
 
 fn main() {
-    let imgx = 1920 / 2;
-    let imgy = 1080 / 2;
+    let imgx = 1920 / 4;
+    let imgy = 1080 / 4;
 
-    let samples_per_pixel = 150;
+    let samples_per_pixel = 20;
     let max_bounces = 10;
 
     let vertical_fov = 20.;
@@ -38,8 +38,8 @@ fn main() {
     let mut spheres = vec![];
     let mut materials = vec![];
 
-    for z in -20..20 {
-        for x in -20..20 {
+    for z in -10..10 {
+        for x in -10..10 {
             let choice = rand::random();
             let center = Vec3A::new(
                 x as f32 + 0.9 * rand::random::<f32>(),
@@ -54,7 +54,7 @@ fn main() {
                         let albedo = Vec3A::from(rand::random::<[f32; 3]>())
                             * Vec3A::from(rand::random::<[f32; 3]>());
                         center2 = Some(center + Vec3A::new(0.0, 0.5 * rand::random::<f32>(), 0.0));
-                        Mat::Lambertian(Lambertian { albedo })
+                        Mat::Lambertian(Lambertian { tex: Box::new(SolidColour { albedo }) } )
                     }
                     0.8..0.95 => {
                         let albedo = (Vec3A::from(rand::random::<[f32; 3]>()) + Vec3A::ONE) / 2.0;
@@ -88,7 +88,7 @@ fn main() {
     ));
 
     materials.push(Mat::Lambertian(Lambertian {
-        albedo: col(0.4, 0.2, 0.1),
+        tex: Box::new(SolidColour { albedo: col(0.4, 0.2, 0.1) }),
     }));
     spheres.push(Sphere::new(
         Vec3A::new(-4.0, 1.0, 0.0),
@@ -106,12 +106,21 @@ fn main() {
         materials.len() as u32 - 1,
     ));
 
+    // materials.push(Mat::Lambertian(Lambertian {
+    //     tex: Box::new(CheckerTexture::new_solid(0.32, col(0.2, 0.3, 0.1), Vec3A::splat(0.9)))
+    // }));
+    // spheres.push(Sphere::new(
+    //     Vec3A::new(0.0, -1000.0, 0.0),
+    //     1000.0,
+    //     materials.len() as u32 - 1,
+    // ));
+
     materials.push(Mat::Lambertian(Lambertian {
-        albedo: col(0.5, 0.5, 0.5),
+        tex: Box::new(ImageTexture::new("./earthmap.jpg"))
     }));
     spheres.push(Sphere::new(
-        Vec3A::new(0.0, -1000.0, 0.0),
-        1000.0,
+        Vec3A::new(0.0, 0.0, 0.0),
+        2.0,
         materials.len() as u32 - 1,
     ));
 
@@ -167,6 +176,88 @@ fn ray_colour(world: &World, r: Ray, depth: u32) -> Vec3A {
     (1.0 - a) * col(1.0, 1.0, 1.0) + a * col(0.5, 0.7, 1.0)
 }
 
+trait Texture: Sync {
+    fn value(&self, u: f32, v: f32, p: Vec3A) -> Vec3A;
+}
+
+struct SolidColour {
+    albedo: Vec3A,
+}
+
+impl Texture for SolidColour {
+    fn value(&self, _u: f32, _v: f32, _p: Vec3A) -> Vec3A {
+        self.albedo
+    }
+}
+
+struct CheckerTexture<A: Texture, B: Texture> {
+    inv_scale: f32,
+    even: A,
+    odd: B,
+}
+
+impl<A: Texture, B: Texture> CheckerTexture<A, B> {
+    fn new(scale: f32, even: A, odd: B) -> Self {
+        Self {
+            inv_scale: 1.0 / scale,
+            even,
+            odd,
+        }
+    }
+}
+
+impl CheckerTexture<SolidColour, SolidColour> {
+    fn new_solid(scale: f32, c1: Vec3A, c2: Vec3A) -> Self {
+        let even = SolidColour { albedo: c1 };
+        let odd = SolidColour { albedo: c2 };
+        Self {
+            inv_scale: 1.0 / scale,
+            even,
+            odd,
+        }
+    }
+}
+
+impl<A: Texture, B: Texture> Texture for CheckerTexture<A, B> {
+    fn value(&self, u: f32, v: f32, p: Vec3A) -> Vec3A {
+        let int = (self.inv_scale * p).floor().as_ivec3();
+        let is_even = int.element_sum() % 2 == 0;
+        if is_even {
+            self.even.value(u, v, p)
+        } else {
+            self.odd.value(u, v, p)
+        }
+    }
+}
+
+struct ImageTexture {
+    texture: DynamicImage,
+}
+
+impl ImageTexture {
+    fn new(filepath: &str) -> Self {
+        let img = image::open(filepath).unwrap();
+        Self { texture: img }
+    }
+}
+
+impl Texture for ImageTexture {
+    fn value(&self, u: f32, v: f32, _p: Vec3A) -> Vec3A {
+        let u = u.clamp(0., 1.);
+        let v = 1.0 - v.clamp(0., 1.);
+
+        let i = (u * self.texture.width() as f32) as u32;
+        let j = (v * self.texture.height() as f32) as u32;
+        let pixel = self.texture.get_pixel(i, j);
+        let scale = 1. / 255.;
+        Vec3A::new(
+            pixel.0[0] as f32 * scale,
+            pixel.0[1] as f32 * scale,
+            pixel.0[2] as f32 * scale
+        )
+    }
+}
+
 #[derive(Debug)]
 struct BVH<T: Hittable> {
     objects: Vec<T>,
@@ -201,6 +292,7 @@ impl<T: Hittable> BVH<T> {
         match span {
             1 => {
                 tree[node * 2] = MaybeUninit::new(InnerBVHNode::Leaf(start));
+                tree[node * 2 + 1] = MaybeUninit::new(InnerBVHNode::Leaf(start));
             }
             2 => {
                 tree[node * 2] = MaybeUninit::new(InnerBVHNode::Leaf(start));
@@ -498,7 +590,7 @@ impl Material for Metal {
 }
 
 struct Lambertian {
-    albedo: Vec3A,
+    tex: Box<dyn Texture>,
 }
 
 impl Material for Lambertian {
@@ -512,7 +604,7 @@ impl Material for Lambertian {
             direction: scatter_direction,
             time: ray.time,
         };
-        Some((scattered, self.albedo))
+        Some((scattered, self.tex.value(rec.u, rec.v, rec.point())))
     }
 }
 
@@ -567,10 +659,12 @@ struct HitRecord {
     normal_f: Vec4,
     point_t: Vec4,
     mat_index: u32,
+    u: f32,
+    v: f32,
 }
 
 impl HitRecord {
-    fn new(ray: Ray, normal: Vec3A, point: Vec3A, t: f32, mat_index: u32) -> Self {
+    fn new(ray: Ray, normal: Vec3A, point: Vec3A, t: f32, mat_index: u32, u: f32, v: f32) -> Self {
         let dot = ray.direction.dot(normal);
         let normal_f = if dot < 0.0 {
             normal.extend(dot)
@@ -582,6 +676,8 @@ impl HitRecord {
             normal_f,
             point_t,
             mat_index,
+            u,
+            v,
         }
     }
 
@@ -632,6 +728,14 @@ impl Sphere {
     fn radius(self) -> f32 {
         self.0.w
     }
+
+    fn get_uv(p: Vec3A) -> (f32, f32) {
+        let theta = (-p.y).acos();
+        let phi = (-p.z).atan2(p.x) + PI;
+        let u = phi / (2.0 * PI);
+        let v = theta / PI;
+        (u, v)
+    }
 }
 
 impl Hittable for Sphere {
@@ -658,7 +762,8 @@ impl Hittable for Sphere {
         let point = r.at(root);
         let normal = (point - center) / radius;
 
-        let rec = HitRecord::new(r, normal, point, root, self.mat_index());
+        let (u, v) = Sphere::get_uv(normal);
+        let rec = HitRecord::new(r, normal, point, root, self.mat_index(), u, v);
 
         Some(rec)
     }
